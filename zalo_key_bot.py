@@ -343,7 +343,6 @@ def handle(chat_id: str, user_id: str, text: str):
             log.exception("buy failed")
             return send(chat_id, f"❌ Lỗi: {e}")
     msg = f"✅ {len(res['keys'])} key {plan['label']}:\n" + "\n".join(res["keys"])
-    msg += f"\n💰 Đã trừ {money(res['cost'])} • Số dư còn {money(res['balance'])}"
     if res["mismatch"]:
         msg += f"\n⚠️ Yêu cầu {qty} key nhưng web trả {len(res['keys'])}. Kiểm tra Lịch sử trên web."
     send(chat_id, msg)
