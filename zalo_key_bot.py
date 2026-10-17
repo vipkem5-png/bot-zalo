@@ -209,24 +209,25 @@ def scan_site() -> str:
     return "\n".join(out)
 
 
-def src_dump() -> str:
+def src_dump(kw: str = "") -> str:
     c = ShopClient()
     c.login()
     r, p, texts = page_scripts(c, urljoin(SHOP_URL, CTV_PATH))
     allt = "\n".join(texts)
-    out = [f"/ctv -> HTTP {r.status_code}, url cuối: {urlparse(r.url).path}",
-           f"số script: {len(texts)}, tổng {len(allt)} ký tự"]
-    apis = sorted(set(re.findall(r"/api/[A-Za-z0-9_\-/.]+", allt)))
-    out += ["=== MỌI ĐƯỜNG DẪN /api/ ==="] + (apis[:40] or ["(không thấy)"])
-    shown, last = 0, -10000
-    for m in re.finditer(r"keyCount", allt):
-        if m.start() - last < 1500:
-            continue
-        last = m.start()
-        out += ["=== ĐOẠN QUANH keyCount ===", collapse(allt[max(0, m.start() - 300): m.start() + 1200])]
-        shown += 1
-        if shown >= 2:
-            break
+    kws = [kw] if kw else ["buy-keys", "buySuccessModal"]
+    out = [f"/ctv -> HTTP {r.status_code}, số script: {len(texts)}, {len(allt)} ký tự"]
+    for k in kws:
+        shown, last = 0, -10000
+        for m in re.finditer(re.escape(k), allt):
+            if m.start() - last < 1800:
+                continue
+            last = m.start()
+            out += [f"=== ĐOẠN QUANH {k} ===", collapse(allt[max(0, m.start() - 400): m.start() + 1600])]
+            shown += 1
+            if shown >= 2:
+                break
+        if not shown:
+            out.append(f"(không thấy '{k}')")
     return "\n".join(out)
 
 
@@ -255,7 +256,7 @@ HELP = ("🤖 Lệnh mua key:\n"
         "Ví dụ: .ikey1h 1\n"
         ".id → xem ID Zalo của bạn\n"
         ".scan → dò form/API của web (chỉ chủ bot)\n"
-        ".src → đọc mã trang mua key (chỉ chủ bot)")
+        ".src [từ khóa] → đọc mã trang mua key (chỉ chủ bot)")
 
 def handle(chat_id: str, user_id: str, text: str):
     text = (text or "").strip()
@@ -269,12 +270,12 @@ def handle(chat_id: str, user_id: str, text: str):
             return send(chat_id, scan_site())
         except Exception as e:
             return send(chat_id, f"❌ Lỗi scan: {e}")
-    if text.lower() == ".src":
+    if text.lower().startswith(".src"):
         if not ALLOWED_IDS or user_id not in ALLOWED_IDS:
             return send(chat_id, "⛔ Cần đặt ALLOWED_IDS trước.")
         send(chat_id, "🔎 Đang đọc mã trang mua key...")
         try:
-            return send(chat_id, src_dump())
+            return send(chat_id, src_dump(text[4:].strip()))
         except Exception as e:
             return send(chat_id, f"❌ Lỗi src: {e}")
     if text.lower() in (".help", "/start", "help"):
