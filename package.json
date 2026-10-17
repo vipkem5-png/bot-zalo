@@ -1,6 +1,0 @@
-{
-  "name": "zalo-key-bot",
-  "type": "module",
-  "scripts": { "start": "node index.js" },
-  "dependencies": { "zca-js": "latest" }
-}
