@@ -95,6 +95,7 @@ class ShopClient:
         if chk.status_code != 200:
             raise RuntimeError(f"Có token nhưng /me trả HTTP {chk.status_code}. Có thể web dùng kiểu header khác Bearer.")
         self.token = data["token"]
+        self.s.cookies.set("ctv_token", data["token"], domain=urlparse(SHOP_URL).hostname, path="/")
 
     def buy(self, plan_code: str, qty: int) -> list[str]:
         if not BUY_PATH:
@@ -208,6 +209,27 @@ def scan_site() -> str:
     return "\n".join(out)
 
 
+def src_dump() -> str:
+    c = ShopClient()
+    c.login()
+    r, p, texts = page_scripts(c, urljoin(SHOP_URL, CTV_PATH))
+    allt = "\n".join(texts)
+    out = [f"/ctv -> HTTP {r.status_code}, url cuối: {urlparse(r.url).path}",
+           f"số script: {len(texts)}, tổng {len(allt)} ký tự"]
+    apis = sorted(set(re.findall(r"/api/[A-Za-z0-9_\-/.]+", allt)))
+    out += ["=== MỌI ĐƯỜNG DẪN /api/ ==="] + (apis[:40] or ["(không thấy)"])
+    shown, last = 0, -10000
+    for m in re.finditer(r"keyCount", allt):
+        if m.start() - last < 1500:
+            continue
+        last = m.start()
+        out += ["=== ĐOẠN QUANH keyCount ===", collapse(allt[max(0, m.start() - 300): m.start() + 1200])]
+        shown += 1
+        if shown >= 2:
+            break
+    return "\n".join(out)
+
+
 # ===== ZALO =====
 def zalo(method: str, payload: dict | None = None, timeout=40):
     r = requests.post(f"{ZALO_API_BASE}/bot{ZALO_TOKEN}/{method}", json=payload or {}, timeout=timeout)
@@ -232,7 +254,8 @@ HELP = ("🤖 Lệnh mua key:\n"
         ".ikey10p <sl> | .ikey1h <sl> | .ikey1d <sl> | .ikey7d <sl> | .ikey30d <sl>\n"
         "Ví dụ: .ikey1h 1\n"
         ".id → xem ID Zalo của bạn\n"
-        ".scan → dò form/API của web (chỉ chủ bot)")
+        ".scan → dò form/API của web (chỉ chủ bot)\n"
+        ".src → đọc mã trang mua key (chỉ chủ bot)")
 
 def handle(chat_id: str, user_id: str, text: str):
     text = (text or "").strip()
@@ -246,6 +269,14 @@ def handle(chat_id: str, user_id: str, text: str):
             return send(chat_id, scan_site())
         except Exception as e:
             return send(chat_id, f"❌ Lỗi scan: {e}")
+    if text.lower() == ".src":
+        if not ALLOWED_IDS or user_id not in ALLOWED_IDS:
+            return send(chat_id, "⛔ Cần đặt ALLOWED_IDS trước.")
+        send(chat_id, "🔎 Đang đọc mã trang mua key...")
+        try:
+            return send(chat_id, src_dump())
+        except Exception as e:
+            return send(chat_id, f"❌ Lỗi src: {e}")
     if text.lower() in (".help", "/start", "help"):
         return send(chat_id, HELP)
     m = CMD_RE.match(text)
