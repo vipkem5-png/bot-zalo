@@ -2,10 +2,10 @@ import { Zalo } from "zca-js";
 import fs from "fs";
 
 // ===== CẤU HÌNH =====
-const SHOP_URL   = process.env.SHOP_URL || "https://vohoainam.net";
+const SHOP_URL   = process.env.SHOP_URL || "https://vohoainam.net/ctv";
 const SHOP_USER  = process.env.SHOP_USER;
 const SHOP_PASS  = process.env.SHOP_PASS;
-const KEY_PREFIX = process.env.KEY_PREFIX || "THIEN";
+const KEY_PREFIX = process.env.KEY_PREFIX || "THIENDINH";
 const MAX_QTY    = Number(process.env.MAX_QTY || 50);
 const MAX_DEVICES = 1;
 const ALLOWED = new Set((process.env.ALLOWED_IDS || "").split(",").filter(Boolean));
