@@ -14,10 +14,10 @@ SHOP_USER     = os.environ["SHOP_USER"]
 SHOP_PASS     = os.environ["SHOP_PASS"]
 ALLOWED_IDS   = set(filter(None, os.getenv("ALLOWED_IDS", "").split(",")))  # ID Zalo được phép mua
 MAX_QTY       = int(os.getenv("MAX_QTY", "50"))
-KEY_PREFIX    = os.getenv("KEY_PREFIX", "THIEN")
+KEY_PREFIX    = os.getenv("KEY_PREFIX", "THIENDINH")
 MAX_DEVICES   = 1
-LOGIN_PATH    = os.getenv("SHOP_LOGIN_PATH", "/api/login")     # đường dẫn API đăng nhập của web
-BUY_PATH      = os.getenv("SHOP_BUY_PATH", "/api/buy-key")     # đường dẫn API mua key của web
+LOGIN_PATH    = os.getenv("SHOP_LOGIN_PATH", "/login")     # đường dẫn API đăng nhập của web
+BUY_PATH      = os.getenv("SHOP_BUY_PATH", "/ctv")     # đường dẫn API mua key của web
 
 # Lệnh -> mã chu kỳ trên web (sửa 'code' theo giá trị web thực sự gửi)
 PLANS = {
