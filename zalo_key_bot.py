@@ -129,44 +129,76 @@ def describe(page: Page, title: str) -> list[str]:
     out.extend(page.onclicks[:12])
     return out
 
-def scan_site() -> str:
-    out, texts = [], []
-    c = ShopClient()
-    try:
-        c.login()
-        out.append("Đăng nhập: OK")
-    except Exception as e:
-        return f"Đăng nhập: LỖI {e}"
-    me = c.s.get(urljoin(SHOP_URL, ME_PATH), timeout=20)
-    out.append(f"{ME_PATH} -> HTTP {me.status_code}")
-    try:
-        j = me.json()
-        out.append("me (tên trường): " + ",".join(map(str, j.keys())))
-        for k, v in j.items():
-            if isinstance(v, dict):
-                out.append(f"  {k}: " + ",".join(map(str, v.keys())))
-    except Exception:
-        pass
-    r = c.s.get(urljoin(SHOP_URL, CTV_PATH), timeout=20)
-    cp = Page(); cp.feed(r.text)
-    out += [f"{CTV_PATH} -> HTTP {r.status_code}"] + describe(cp, "Trang mua key")
-    texts += cp.scripts
+COOKIE_GUESS = ["token", "ctv_token", "ctvToken", "auth_token", "authToken", "access_token", "jwt", "session", "ctv_session"]
+
+def collapse(s: str) -> str:
+    return re.sub(r"\s+", " ", s)
+
+def page_scripts(c, url):
+    r = c.s.get(url, timeout=20)
+    p = Page(); p.feed(r.text)
+    texts = list(p.scripts)
     host = urlparse(SHOP_URL).netloc
-    for src in cp.script_src[:10]:
-        u = urljoin(SHOP_URL + "/", src)
+    for src in p.script_src[:10]:
+        u = urljoin(r.url, src)
         if urlparse(u).netloc == host:
             try:
                 texts.append(c.s.get(u, timeout=20).text)
             except Exception:
                 pass
+    return r, p, texts
+
+def scan_site() -> str:
+    out = []
+    c = ShopClient()
+    host = urlparse(SHOP_URL).hostname
+    ctv_url = urljoin(SHOP_URL, CTV_PATH)
+
+    # 1) JS xử lý đăng nhập (xem token được lưu ở đâu, chuyển trang thế nào)
+    _, _, texts = page_scripts(c, urljoin(SHOP_URL, "/login"))
+    for t in texts:
+        i = t.find("/api/ctv/login")
+        if i >= 0:
+            out += ["=== JS XỬ LÝ ĐĂNG NHẬP ===", collapse(t[max(0, i - 50): i + 1500])]
+            break
+
+    # 2) đăng nhập bằng API
+    try:
+        c.login()
+        out.append("Đăng nhập: OK")
+    except Exception as e:
+        return "\n".join(out + [f"Đăng nhập: LỖI {e}"])
+    token = c.token
+    out.append("Cookie web trả về khi login: " + (",".join(c.s.cookies.keys()) or "(không có)"))
+
+    # 3) /ctv có thể chuyển về /login nếu thiếu cookie -> thử đoán tên cookie
+    found = None
+    r = c.s.get(ctv_url, timeout=20)
+    if "/login" in urlparse(r.url).path:
+        for name in COOKIE_GUESS:
+            c.s.cookies.set(name, token, domain=host)
+            r2 = c.s.get(ctv_url, timeout=20)
+            if "/login" not in urlparse(r2.url).path:
+                found = name
+                break
+            try:
+                c.s.cookies.clear(domain=host, path="/", name=name)
+            except Exception:
+                pass
+        out.append(f"/ctv chuyển về /login khi chưa có cookie. Cookie được chấp nhận: {found or 'KHÔNG TÌM RA'}")
+    else:
+        out.append("/ctv mở được ngay sau đăng nhập (không cần cookie)")
+
+    # 4) đọc trang /ctv (trang đã đăng nhập nếu tìm ra)
+    r, p, texts = page_scripts(c, ctv_url)
+    out += [f"/ctv -> HTTP {r.status_code}, url cuối: {urlparse(r.url).path}"] + describe(p, "Trang mua key")
     urls, snippets = [], []
     for t in texts:
         for u in re.findall(r"fetch\(\s*[`'\"]([^`'\"]+)", t):
             if u not in urls:
                 urls.append(u)
         for m in re.finditer(r"fetch\(|axios\.|\$\.post\(|XMLHttpRequest", t):
-            seg = t[m.start(): m.start() + 700].replace("\n", " ")
-            seg = re.sub(r"\s+", " ", seg)
+            seg = collapse(t[m.start(): m.start() + 700])
             if re.search(r"buy|mua|order|purchase|key", seg, re.I) and "/login" not in seg[:60] and seg not in snippets:
                 snippets.append(seg)
     out.append("=== MỌI LỜI GỌI fetch ===")
