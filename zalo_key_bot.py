@@ -8,12 +8,12 @@ log = logging.getLogger("keybot")
 # ===== CẤU HÌNH (đặt bằng biến môi trường, đừng hardcode) =====
 ZALO_TOKEN    = os.environ["ZALO_BOT_TOKEN"]
 ZALO_API_BASE = os.getenv("ZALO_API_BASE", "https://bot-api.zaloplatforms.com")  # kiểm tra lại theo docs Zalo
-SHOP_URL      = os.getenv("SHOP_URL", "https://vohoainam.net")
+SHOP_URL      = os.getenv("SHOP_URL", "https://vohoainam.net/ctv")
 SHOP_USER     = os.environ["SHOP_USER"]
 SHOP_PASS     = os.environ["SHOP_PASS"]
 ALLOWED_IDS   = set(filter(None, os.getenv("ALLOWED_IDS", "").split(",")))  # ID Zalo được phép mua
 MAX_QTY       = int(os.getenv("MAX_QTY", "50"))
-KEY_PREFIX    = os.getenv("KEY_PREFIX", "THIEN")
+KEY_PREFIX    = os.getenv("KEY_PREFIX", "THIENDINH")
 MAX_DEVICES   = 1
 
 # Lệnh -> mã chu kỳ trên web (sửa 'code' theo giá trị web thực sự gửi)
