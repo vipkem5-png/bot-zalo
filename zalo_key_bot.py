@@ -16,7 +16,7 @@ SHOP_PASS     = os.environ["SHOP_PASS"]
 LOGIN_PATH    = os.getenv("SHOP_LOGIN_PATH", "/api/ctv/login")
 ME_PATH       = os.getenv("SHOP_ME_PATH", "/api/ctv/me")
 CTV_PATH      = os.getenv("SHOP_CTV_PATH", "/ctv")
-BUY_PATH      = os.getenv("SHOP_BUY_PATH", "")          # điền sau khi .scan tìm ra
+BUY_PATH      = os.getenv("SHOP_BUY_PATH", "/api/ctv/buy-keys")
 ALLOWED_IDS   = set(filter(None, os.getenv("ALLOWED_IDS", "").split(",")))
 MAX_QTY       = int(os.getenv("MAX_QTY", "50"))
 KEY_PREFIX    = os.getenv("KEY_PREFIX", "THIEN")
@@ -31,6 +31,13 @@ PLANS = {
     "30d": {"code": "30d", "label": "30 Ngày"},
 }
 CMD_RE = re.compile(r"^\.ikey(10p|1h|1d|7d|30d)\s+(\d+)\s*$", re.I)
+
+
+def money(x) -> str:
+    try:
+        return f"{int(x):,}".replace(",", ".") + "đ"
+    except Exception:
+        return str(x)
 
 
 # ===== ĐỌC HTML (form, input, nút bấm, script) =====
@@ -97,24 +104,50 @@ class ShopClient:
         self.token = data["token"]
         self.s.cookies.set("ctv_token", data["token"], domain=urlparse(SHOP_URL).hostname, path="/")
 
-    def buy(self, plan_code: str, qty: int) -> list[str]:
-        if not BUY_PATH:
-            raise RuntimeError("Chưa cấu hình SHOP_BUY_PATH. Gõ .scan để dò đường dẫn mua key.")
-        # TODO: sửa tên trường theo kết quả .scan
+    def me(self) -> dict:
+        r = self.s.get(urljoin(SHOP_URL, ME_PATH), timeout=20)
+        if r.status_code in (401, 403):
+            self.login()
+            r = self.s.get(urljoin(SHOP_URL, ME_PATH), timeout=20)
+        r.raise_for_status()
+        return r.json()
+
+    def buy(self, plan_code: str, qty: int) -> dict:
+        """Mua key qua POST /api/ctv/buy-keys (đúng như nút 'Mua Key Ngay' của web)."""
+        m = re.match(r"^(\d+)([mhdMy])$", plan_code)
+        if not m:
+            raise RuntimeError(f"Mã chu kỳ không hợp lệ: {plan_code}")
+        val, unit = int(m.group(1)), m.group(2)
+
+        # kiểm tra số dư trước khi mua (1 máy/key => giá = đơn giá x số lượng)
+        info = self.me()
+        price = (info.get("pricing") or {}).get(plan_code)
+        balance = (info.get("user") or {}).get("balance")
+        if price is not None and balance is not None and balance < price * qty:
+            raise RuntimeError(f"Không đủ số dư: cần {money(price * qty)}, còn {money(balance)}")
+
+        payload = {"preset": plan_code, "duration_val": val, "duration_unit": unit,
+                   "max_devices": MAX_DEVICES, "count": qty, "prefix": KEY_PREFIX.upper()}
+        r = None
         for attempt in (1, 2):
-            r = self.s.post(urljoin(SHOP_URL, BUY_PATH), json={
-                "duration": plan_code, "quantity": qty,
-                "max_devices": MAX_DEVICES, "prefix": KEY_PREFIX}, timeout=60)
-            if r.status_code in (401, 403) and attempt == 1:
-                self.login(); continue
-            r.raise_for_status()
+            try:
+                r = self.s.post(urljoin(SHOP_URL, BUY_PATH), json=payload, timeout=60)
+            except requests.RequestException as e:
+                # KHÔNG tự thử lại: có thể web đã trừ tiền rồi
+                raise RuntimeError(f"Mất kết nối khi mua ({e}). Kiểm tra mục Lịch sử trên web trước khi mua lại, có thể đã bị trừ tiền.")
+            if r.status_code == 401 and attempt == 1:   # hết phiên, chưa xử lý gì -> đăng nhập lại
+                self.login()
+                continue
+            break
+        try:
             data = r.json()
-            if not data.get("success", True):
-                raise RuntimeError(data.get("message", "Mua key thất bại"))
-            keys = data.get("keys", [])
-            if len(keys) != qty:
-                raise RuntimeError(f"Web trả {len(keys)} key, yêu cầu {qty}. Kiểm tra Lịch sử.")
-            return keys
+        except Exception:
+            raise RuntimeError(f"Web trả dữ liệu lạ (HTTP {r.status_code}). Kiểm tra mục Lịch sử trên web.")
+        if not data.get("success"):
+            raise RuntimeError(data.get("error") or f"Mua key thất bại (HTTP {r.status_code})")
+        keys = data.get("keys") or []
+        return {"keys": keys, "cost": data.get("total_cost"), "balance": data.get("new_balance"),
+                "mismatch": len(keys) != qty}
 
 
 # ===== LỆNH .scan: dò form + đường dẫn API trong trang web =====
@@ -255,6 +288,7 @@ HELP = ("🤖 Lệnh mua key:\n"
         ".ikey10p <sl> | .ikey1h <sl> | .ikey1d <sl> | .ikey7d <sl> | .ikey30d <sl>\n"
         "Ví dụ: .ikey1h 1\n"
         ".id → xem ID Zalo của bạn\n"
+        ".sodu → xem số dư trên web (chỉ chủ bot)\n"
         ".scan → dò form/API của web (chỉ chủ bot)\n"
         ".src [từ khóa] → đọc mã trang mua key (chỉ chủ bot)")
 
@@ -270,6 +304,16 @@ def handle(chat_id: str, user_id: str, text: str):
             return send(chat_id, scan_site())
         except Exception as e:
             return send(chat_id, f"❌ Lỗi scan: {e}")
+    if text.lower() == ".sodu":
+        if not ALLOWED_IDS or user_id not in ALLOWED_IDS:
+            return send(chat_id, "⛔ Cần đặt ALLOWED_IDS trước.")
+        try:
+            if not shop.token:
+                shop.login()
+            u = shop.me().get("user", {})
+            return send(chat_id, f"💰 Số dư: {money(u.get('balance'))}\n🔑 Tổng key đã mua: {u.get('total_keys')}")
+        except Exception as e:
+            return send(chat_id, f"❌ Lỗi: {e}")
     if text.lower().startswith(".src"):
         if not ALLOWED_IDS or user_id not in ALLOWED_IDS:
             return send(chat_id, "⛔ Cần đặt ALLOWED_IDS trước.")
@@ -294,12 +338,16 @@ def handle(chat_id: str, user_id: str, text: str):
         try:
             if not shop.token:
                 shop.login()
-            keys = shop.buy(plan["code"], qty)
+            res = shop.buy(plan["code"], qty)
         except Exception as e:
             log.exception("buy failed")
             return send(chat_id, f"❌ Lỗi: {e}")
-    send(chat_id, f"✅ {qty} key {plan['label']}:\n" + "\n".join(keys))
-    log.info("user=%s bought %s x%s", user_id, plan_key, qty)
+    msg = f"✅ {len(res['keys'])} key {plan['label']}:\n" + "\n".join(res["keys"])
+    msg += f"\n💰 Đã trừ {money(res['cost'])} • Số dư còn {money(res['balance'])}"
+    if res["mismatch"]:
+        msg += f"\n⚠️ Yêu cầu {qty} key nhưng web trả {len(res['keys'])}. Kiểm tra Lịch sử trên web."
+    send(chat_id, msg)
+    log.info("user=%s bought %s x%s cost=%s", user_id, plan_key, qty, res["cost"])
 
 def main():
     log.info("Bot đang chạy...")
