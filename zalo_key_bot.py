@@ -21,7 +21,7 @@ BUY_PATH      = os.getenv("SHOP_BUY_PATH", "/api/ctv/buy-keys")
 ADMIN_IDS     = set(filter(None, os.getenv("ALLOWED_IDS", "").split(",")))   # ID Zalo của admin
 MAX_QTY       = int(os.getenv("MAX_QTY", "50"))
 MAX_DEVICES   = 1
-SECRET_KEY    = os.getenv("SECRET_KEY", "")        # chuỗi bí mật bất kỳ, dùng mã hóa mật khẩu khách
+SECRET_KEY    = os.getenv("SECRET_KEY", "")        # TÙY CHỌN: không đặt thì bot tự tạo khóa mã hóa
 DATA_DIR      = os.getenv("DATA_DIR") or ("/data" if os.path.isdir("/data") else "./data")
 
 PLANS = {
@@ -49,9 +49,22 @@ class Store:
         os.makedirs(DATA_DIR, exist_ok=True)
         self.path = os.path.join(DATA_DIR, "users.json")
         self.lock = threading.Lock()
-        self.fernet = None
-        if SECRET_KEY:
+        if SECRET_KEY:                      # có đặt SECRET_KEY thì dùng nó
             self.fernet = Fernet(base64.urlsafe_b64encode(hashlib.sha256(SECRET_KEY.encode()).digest()))
+        else:                               # không thì tự tạo khóa và lưu cạnh dữ liệu
+            kp = os.path.join(DATA_DIR, "secret.key")
+            try:
+                with open(kp, "rb") as f:
+                    raw = f.read()
+            except FileNotFoundError:
+                raw = Fernet.generate_key()
+                with open(kp, "wb") as f:
+                    f.write(raw)
+                try:
+                    os.chmod(kp, 0o600)
+                except Exception:
+                    pass
+            self.fernet = Fernet(raw)
         self.data = {}
         try:
             with open(self.path, encoding="utf-8") as f:
@@ -233,8 +246,8 @@ def help_text(uid: str) -> str:
             ".sodu → xem số dư tài khoản web của bạn")
     if uid not in ADMIN_IDS:
         base += ("\n\nLần đầu dùng (sau khi admin kích hoạt):\n"
-                 ".dangnhap <tài khoản> <mật khẩu> → dùng tài khoản web CỦA BẠN\n"
-                 ".tiento <TIỀN TỐ> → tiền tố cho key của bạn\n"
+                 ".dangnhap <tài khoản> <mật khẩu> [tiền tố] → dùng tài khoản web CỦA BẠN\n"
+                 ".tiento <TIỀN TỐ> → đổi tiền tố key sau này\n"
                  ".dangxuat → xóa tài khoản đã lưu")
     else:
         base += ("\n\nAdmin:\n"
@@ -299,19 +312,28 @@ def handle(chat_id: str, uid: str, text: str, chat_type: str = ""):
         # .dangnhap
         if "GROUP" in chat_type.upper():
             return send(chat_id, "⚠️ Hãy nhắn riêng cho bot để đăng nhập, đừng gửi mật khẩu trong nhóm.")
-        sp = text.split(None, 2)
-        if len(sp) < 3:
-            return send(chat_id, "Cú pháp: .dangnhap <tài khoản> <mật khẩu>")
-        username, password = sp[1], sp[2].strip()
+        sp = text.split()
+        if len(sp) < 3 or len(sp) > 4:
+            return send(chat_id, "Cú pháp: .dangnhap <tài khoản> <mật khẩu> [tiền tố]\nVí dụ: .dangnhap khach1 matkhau123 ABC")
+        username, password = sp[1], sp[2]
+        prefix = sp[3].upper() if len(sp) == 4 else None
+        if prefix and not PREFIX_RE.match(prefix):
+            return send(chat_id, "Tiền tố chỉ gồm chữ và số, 2-12 ký tự. Ví dụ: ABC")
         try:
             ShopClient(username, password).login()
             store.set_creds(uid, username, password)
+            if prefix:
+                store.set_prefix(uid, prefix)
         except Exception as e:
             return send(chat_id, f"❌ {e}")
         clients.pop(uid, None)
-        return send(chat_id, f"✅ Đăng nhập OK với tài khoản {username}.\n"
-                             "Nên xóa tin nhắn chứa mật khẩu khỏi khung chat.\n"
-                             "Tiếp theo, nếu chưa đặt tiền tố: .tiento <TIỀN TỐ>")
+        msg = f"✅ Đăng nhập OK với tài khoản {username}."
+        if prefix:
+            msg += f"\n✅ Tiền tố key: {prefix}"
+        elif not (store.get(uid) or {}).get("prefix"):
+            msg += "\nTiếp theo hãy đặt tiền tố: .tiento <TIỀN TỐ>"
+        msg += "\nNên xóa tin nhắn chứa mật khẩu khỏi khung chat."
+        return send(chat_id, msg)
 
     if cmd == ".sodu":
         try:
@@ -340,6 +362,7 @@ def handle(chat_id: str, uid: str, text: str, chat_type: str = ""):
         except Exception as e:
             log.exception("buy failed")
             return send(chat_id, f"❌ Lỗi: {e}")
+    msg = f"✅ {len(res['keys'])} key {plan['label']}:\n" + "\n".join(res["keys"])
     if res["mismatch"]:
         msg += f"\n⚠️ Yêu cầu {qty} key nhưng web trả {len(res['keys'])}. Kiểm tra Lịch sử trên web."
     send(chat_id, msg)
@@ -347,7 +370,7 @@ def handle(chat_id: str, uid: str, text: str, chat_type: str = ""):
 
 
 def main():
-    log.info("Bot đang chạy... admin=%d, SECRET_KEY=%s", len(ADMIN_IDS), "có" if SECRET_KEY else "CHƯA ĐẶT")
+    log.info("Bot đang chạy... admin=%d", len(ADMIN_IDS))
     while True:
         try:
             resp = zalo("getUpdates", {"timeout": 30}, timeout=45)
