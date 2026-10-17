@@ -13,7 +13,8 @@ ZALO_API_BASE = os.getenv("ZALO_API_BASE", "https://bot-api.zaloplatforms.com") 
 SHOP_URL      = os.getenv("SHOP_URL", "https://vohoainam.net").rstrip("/")      # KHÔNG có /ctv ở cuối
 SHOP_USER     = os.environ["SHOP_USER"]
 SHOP_PASS     = os.environ["SHOP_PASS"]
-LOGIN_PATH    = os.getenv("SHOP_LOGIN_PATH", "/login")
+LOGIN_PATH    = os.getenv("SHOP_LOGIN_PATH", "/api/ctv/login")
+ME_PATH       = os.getenv("SHOP_ME_PATH", "/api/ctv/me")
 CTV_PATH      = os.getenv("SHOP_CTV_PATH", "/ctv")
 BUY_PATH      = os.getenv("SHOP_BUY_PATH", "")          # điền sau khi .scan tìm ra
 ALLOWED_IDS   = set(filter(None, os.getenv("ALLOWED_IDS", "").split(",")))
@@ -80,31 +81,20 @@ class ShopClient:
         self.token = None            # đánh dấu đã đăng nhập
 
     def login(self):
-        """Đăng nhập bằng form HTML của trang /login (tự nhận tên ô nhập)."""
-        url = urljoin(SHOP_URL, LOGIN_PATH)
-        r = self.s.get(url, timeout=20)
-        r.raise_for_status()
-        p = Page(); p.feed(r.text)
-        form = next((f for f in p.forms if any(i["type"] == "password" for i in f["inputs"])), None)
-        if not form:
-            raise RuntimeError("Trang /login không có form HTML (có thể đăng nhập bằng JS). Gõ .scan để xem.")
-        data, user_set = {}, False
-        for i in form["inputs"]:
-            if not i["name"]:
-                continue
-            if i["type"] == "password":
-                data[i["name"]] = SHOP_PASS
-            elif i["type"] in ("text", "email", "tel") and not user_set:
-                data[i["name"]] = SHOP_USER; user_set = True
-            else:
-                data[i["name"]] = i["value"]          # ô ẩn (vd csrf)
-        action = urljoin(url, form["action"] or LOGIN_PATH)
-        r2 = self.s.post(action, data=data, timeout=20, allow_redirects=True)
-        r2.raise_for_status()
-        chk = self.s.get(urljoin(SHOP_URL, CTV_PATH), timeout=20)
-        if LOGIN_PATH in urlparse(chk.url).path or 'type="password"' in chk.text.lower():
-            raise RuntimeError("Đăng nhập chưa thành công (sai tài khoản/mật khẩu hoặc web đăng nhập bằng JS).")
-        self.token = "session"
+        """Đăng nhập qua API JSON của web: POST /api/ctv/login -> token."""
+        r = self.s.post(urljoin(SHOP_URL, LOGIN_PATH),
+                        json={"username": SHOP_USER, "password": SHOP_PASS}, timeout=20)
+        try:
+            data = r.json()
+        except Exception:
+            data = {}
+        if r.status_code >= 400 or not data.get("success") or not data.get("token"):
+            raise RuntimeError(f"Đăng nhập thất bại (HTTP {r.status_code}): {data.get('message', 'sai tài khoản/mật khẩu?')}")
+        self.s.headers["Authorization"] = f"Bearer {data['token']}"
+        chk = self.s.get(urljoin(SHOP_URL, ME_PATH), timeout=20)
+        if chk.status_code != 200:
+            raise RuntimeError(f"Có token nhưng /me trả HTTP {chk.status_code}. Có thể web dùng kiểu header khác Bearer.")
+        self.token = data["token"]
 
     def buy(self, plan_code: str, qty: int) -> list[str]:
         if not BUY_PATH:
@@ -142,40 +132,47 @@ def describe(page: Page, title: str) -> list[str]:
 def scan_site() -> str:
     out, texts = [], []
     c = ShopClient()
-    # 1) trang /login (công khai)
-    r = c.s.get(urljoin(SHOP_URL, LOGIN_PATH), timeout=20)
-    lp = Page(); lp.feed(r.text)
-    out += [f"/login -> HTTP {r.status_code}"] + describe(lp, "Trang đăng nhập")
-    texts += lp.scripts
-    # 2) đăng nhập rồi đọc trang /ctv
     try:
         c.login()
         out.append("Đăng nhập: OK")
     except Exception as e:
-        out.append(f"Đăng nhập: LỖI {e}")
+        return f"Đăng nhập: LỖI {e}"
+    me = c.s.get(urljoin(SHOP_URL, ME_PATH), timeout=20)
+    out.append(f"{ME_PATH} -> HTTP {me.status_code}")
+    try:
+        j = me.json()
+        out.append("me (tên trường): " + ",".join(map(str, j.keys())))
+        for k, v in j.items():
+            if isinstance(v, dict):
+                out.append(f"  {k}: " + ",".join(map(str, v.keys())))
+    except Exception:
+        pass
     r = c.s.get(urljoin(SHOP_URL, CTV_PATH), timeout=20)
     cp = Page(); cp.feed(r.text)
-    out += [f"/ctv -> HTTP {r.status_code}, url cuối: {urlparse(r.url).path}"] + describe(cp, "Trang mua key")
+    out += [f"{CTV_PATH} -> HTTP {r.status_code}"] + describe(cp, "Trang mua key")
     texts += cp.scripts
     host = urlparse(SHOP_URL).netloc
-    for src in (lp.script_src + cp.script_src)[:10]:
+    for src in cp.script_src[:10]:
         u = urljoin(SHOP_URL + "/", src)
         if urlparse(u).netloc == host:
             try:
                 texts.append(c.s.get(u, timeout=20).text)
             except Exception:
                 pass
-    paths, snippets = set(), []
+    urls, snippets = [], []
     for t in texts:
-        paths.update(PATH_RE.findall(t))
-        for m in re.finditer(r"fetch\(|axios\.|\$\.post\(|\$\.ajax\(|XMLHttpRequest", t):
-            seg = t[m.start(): m.start() + 300].replace("\n", " ")
-            if re.search(r"login|buy|key|order|purchase|mua", seg, re.I) and seg not in snippets:
+        for u in re.findall(r"fetch\(\s*[`'\"]([^`'\"]+)", t):
+            if u not in urls:
+                urls.append(u)
+        for m in re.finditer(r"fetch\(|axios\.|\$\.post\(|XMLHttpRequest", t):
+            seg = t[m.start(): m.start() + 700].replace("\n", " ")
+            seg = re.sub(r"\s+", " ", seg)
+            if re.search(r"buy|mua|order|purchase|key", seg, re.I) and "/login" not in seg[:60] and seg not in snippets:
                 snippets.append(seg)
-    out.append("=== ĐƯỜNG DẪN TRONG CODE ===")
-    out += sorted(paths)[:40] or ["(không thấy)"]
-    out.append("=== ĐOẠN GỌI API ===")
-    out += snippets[:10] or ["(không thấy)"]
+    out.append("=== MỌI LỜI GỌI fetch ===")
+    out += urls[:40] or ["(không thấy)"]
+    out.append("=== ĐOẠN GỌI LIÊN QUAN MUA KEY ===")
+    out += snippets[:6] or ["(không thấy)"]
     return "\n".join(out)
 
 
